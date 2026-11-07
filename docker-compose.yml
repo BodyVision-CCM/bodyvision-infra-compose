@@ -1,0 +1,126 @@
+# =============================================================================
+# BodyVision – lance TOUS les services en local (dépôt infra-compose)
+#
+#   make up        construit et démarre PostgreSQL puis les services      (voir README.md)
+#   make down      arrête tout (les données sont conservées)
+#
+# Organisation : chaque service est un dépôt Git INDÉPENDANT, cloné À CÔTÉ de celui-ci :
+#
+#       projet/
+#       ├── infra-compose/     <- ce dépôt
+#       ├── auth/              <- build: ../auth
+#       └── ingestion/ ...     <- build: ../ingestion (à venir)
+#
+# Ce fichier est CONÇU POUR ÊTRE ÉTENDU : chaque nouveau service s'ajoute dans `services:` en
+# suivant le modèle de `auth`, et rejoint automatiquement le réseau et l'instance PostgreSQL.
+# Les tests de chaque service sont dans SON dépôt (`make test` y est autonome).
+# Toute la configuration vient du fichier `.env` (modèle : `.env.example`).
+# =============================================================================
+
+name: bodyvision
+
+services:
+
+  # ---------------------------------------------------------------------------
+  # PostgreSQL : UNE instance partagée, un schéma et un rôle SQL par service (ADR-001).
+  # Les rôles et schémas sont créés au tout premier démarrage par postgres/init/.
+  # Les TABLES sont créées par les migrations Alembic de chaque service, pas ici.
+  # ---------------------------------------------------------------------------
+  postgres:
+    image: postgres:16-alpine
+    restart: unless-stopped
+    environment:
+      POSTGRES_DB: ${POSTGRES_DB:?POSTGRES_DB manquant dans .env}
+      POSTGRES_USER: ${POSTGRES_USER:?POSTGRES_USER manquant dans .env}
+      POSTGRES_PASSWORD: ${POSTGRES_PASSWORD:?POSTGRES_PASSWORD manquant dans .env}
+      # Lues uniquement par le script d'initialisation (une variable par service qui a une base).
+      AUTH_DB_USER: ${AUTH_DB_USER:?AUTH_DB_USER manquant dans .env}
+      AUTH_DB_PASSWORD: ${AUTH_DB_PASSWORD:?AUTH_DB_PASSWORD manquant dans .env}
+      ANALYTIQUE_DB_USER: ${ANALYTIQUE_DB_USER:?ANALYTIQUE_DB_USER manquant dans .env}
+      ANALYTIQUE_DB_PASSWORD: ${ANALYTIQUE_DB_PASSWORD:?ANALYTIQUE_DB_PASSWORD manquant dans .env}
+    volumes:
+      - pgdata:/var/lib/postgresql/data
+      # Exécuté UNE fois, quand le volume est vide. Pour le rejouer : `make reset` (efface les données).
+      - ./postgres/init:/docker-entrypoint-initdb.d:ro
+    ports:
+      # Limité à votre machine (DBeaver, psql...). Jamais exposé sur le réseau local.
+      - "127.0.0.1:${POSTGRES_HOST_PORT:-5432}:5432"
+    healthcheck:
+      # `-h 127.0.0.1` est volontaire : pendant l'initialisation, l'image démarre un serveur TEMPORAIRE
+      # qui n'écoute que sur le socket Unix. Tester en TCP évite de déclarer « prêt » avant la fin des
+      # scripts d'init (sinon Auth démarrerait avant que son rôle existe).
+      test: ["CMD-SHELL", "pg_isready -h 127.0.0.1 -U $${POSTGRES_USER} -d $${POSTGRES_DB}"]
+      interval: 5s
+      timeout: 3s
+      retries: 12
+      start_period: 10s
+
+  # ---------------------------------------------------------------------------
+  # Service Auth (Utilisateurs) : FastAPI. Swagger : http://localhost:8001/docs
+  # Code et Dockerfile : dépôt `auth`, cloné dans ../auth (voir README : « Prérequis »).
+  # ---------------------------------------------------------------------------
+  auth:
+    build:
+      context: ../auth
+    image: bodyvision/auth:dev
+    restart: unless-stopped
+    depends_on:
+      postgres:
+        condition: service_healthy
+    environment:
+      # Connexion avec le rôle PROPRE au service (accès limité au schéma « utilisateurs »),
+      # jamais avec le super-utilisateur.
+      DB_HOST: postgres
+      DB_PORT: "5432"
+      DB_NAME: ${POSTGRES_DB}
+      DB_USER: ${AUTH_DB_USER}
+      DB_PASSWORD: ${AUTH_DB_PASSWORD}
+      INTERNAL_SERVICE_TOKEN: ${INTERNAL_SERVICE_TOKEN:?INTERNAL_SERVICE_TOKEN manquant dans .env}
+      JWT_ISSUER: ${JWT_ISSUER:-bodyvision-auth}
+      JWT_AUDIENCE: ${JWT_AUDIENCE:-bodyvision}
+      ACCESS_TOKEN_TTL_SECONDS: ${ACCESS_TOKEN_TTL_SECONDS:-900}
+      REFRESH_TOKEN_TTL_DAYS: ${REFRESH_TOKEN_TTL_DAYS:-30}
+      JWT_AUTOGENERATE_KEYS: ${JWT_AUTOGENERATE_KEYS:-true}
+      RUN_MIGRATIONS: ${RUN_MIGRATIONS:-true}
+      LOG_LEVEL: ${LOG_LEVEL:-INFO}
+      ENABLE_DOCS: ${ENABLE_DOCS:-true}
+    volumes:
+      # Conserve la clé de signature JWT entre les redémarrages (sinon tous les jetons seraient invalidés).
+      - auth_keys:/run/keys
+    ports:
+      # Par défaut limité à votre machine. Pour tester avec un téléphone sur le même Wi-Fi :
+      # AUTH_BIND_ADDRESS=0.0.0.0 dans .env (développement uniquement). L'émulateur Android atteint
+      # la machine hôte via http://10.0.2.2:8001 sans rien changer.
+      - "${AUTH_BIND_ADDRESS:-127.0.0.1}:${AUTH_HOST_PORT:-8001}:8000"
+    security_opt:
+      - no-new-privileges:true
+    cap_drop:
+      - ALL
+
+  # ---------------------------------------------------------------------------
+  # À VENIR – modèles à copier quand les services seront prêts. Convention de ports publiés :
+  # auth 8001, ingestion 8002, analytique 8003.
+  #
+  #   rabbitmq:                       # file de messages entre Ingestion et Analytique-worker
+  #     image: rabbitmq:3-management-alpine
+  #     ports: ["127.0.0.1:5672:5672", "127.0.0.1:15672:15672"]
+  #
+  #   ingestion:                      # Go : valide, dépose le brut sur le bucket, publie dans RabbitMQ, répond 202.
+  #     build: ../ingestion           # N'a AUCUN rôle SQL (n'écrit pas en base, ADR-001).
+  #     depends_on: { rabbitmq: { condition: service_healthy } }
+  #     ports: ["127.0.0.1:8002:8000"]
+  #
+  #   analytique-api:                 # FastAPI : séances, rapports, stats. Rôle SQL ANALYTIQUE_DB_USER.
+  #     build: ../analytique          # (le rôle et le schéma « analytique » existent déjà : voir postgres/init/)
+  #     depends_on: { postgres: { condition: service_healthy } }
+  #     environment: { DB_USER: "${ANALYTIQUE_DB_USER}", DB_PASSWORD: "${ANALYTIQUE_DB_PASSWORD}", ... }
+  #     ports: ["127.0.0.1:8003:8000"]
+  #
+  #   analytique-worker:              # même image qu'analytique-api, autre commande (consomme RabbitMQ).
+  #     image: bodyvision/analytique:dev
+  #     command: ["python", "-m", "app.worker"]
+  # ---------------------------------------------------------------------------
+
+volumes:
+  pgdata:
+  auth_keys:
