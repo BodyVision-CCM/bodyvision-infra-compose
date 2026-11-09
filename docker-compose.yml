@@ -7,9 +7,11 @@
 # Organisation : chaque service est un dépôt Git INDÉPENDANT, cloné À CÔTÉ de celui-ci :
 #
 #       projet/
-#       ├── infra-compose/     <- ce dépôt
-#       ├── auth/              <- build: ../auth
-#       └── ingestion/ ...     <- build: ../ingestion (à venir)
+#       ├── bodyvision-infra-compose/     <- ce dépôt
+#       ├── bodyvision-user-service/      <- service Auth : build: ../bodyvision-user-service
+#       └── (autres services à venir)     <- un dossier frère par dépôt de service
+#
+# Le dossier du service Auth se change avec AUTH_REPO_DIR dans .env (défaut : ../bodyvision-user-service).
 #
 # Ce fichier est CONÇU POUR ÊTRE ÉTENDU : chaque nouveau service s'ajoute dans `services:` en
 # suivant le modèle de `auth`, et rejoint automatiquement le réseau et l'instance PostgreSQL.
@@ -57,11 +59,11 @@ services:
 
   # ---------------------------------------------------------------------------
   # Service Auth (Utilisateurs) : FastAPI. Swagger : http://localhost:8001/docs
-  # Code et Dockerfile : dépôt `auth`, cloné dans ../auth (voir README : « Prérequis »).
+  # Code et Dockerfile : dépôt `bodyvision-user-service`, cloné à côté de celui-ci (README : « Prérequis »).
   # ---------------------------------------------------------------------------
   auth:
     build:
-      context: ../auth
+      context: ${AUTH_REPO_DIR:-../bodyvision-user-service}
     image: bodyvision/auth:dev
     restart: unless-stopped
     depends_on:
@@ -106,12 +108,12 @@ services:
   #     ports: ["127.0.0.1:5672:5672", "127.0.0.1:15672:15672"]
   #
   #   ingestion:                      # Go : valide, dépose le brut sur le bucket, publie dans RabbitMQ, répond 202.
-  #     build: ../ingestion           # N'a AUCUN rôle SQL (n'écrit pas en base, ADR-001).
+  #     build: ../<dépôt ingestion>   # N'a AUCUN rôle SQL (n'écrit pas en base, ADR-001).
   #     depends_on: { rabbitmq: { condition: service_healthy } }
   #     ports: ["127.0.0.1:8002:8000"]
   #
   #   analytique-api:                 # FastAPI : séances, rapports, stats. Rôle SQL ANALYTIQUE_DB_USER.
-  #     build: ../analytique          # (le rôle et le schéma « analytique » existent déjà : voir postgres/init/)
+  #     build: ../<dépôt analytique>  # (le rôle et le schéma « analytique » existent déjà : voir postgres/init/)
   #     depends_on: { postgres: { condition: service_healthy } }
   #     environment: { DB_USER: "${ANALYTIQUE_DB_USER}", DB_PASSWORD: "${ANALYTIQUE_DB_PASSWORD}", ... }
   #     ports: ["127.0.0.1:8003:8000"]

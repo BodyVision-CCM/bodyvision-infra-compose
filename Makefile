@@ -1,12 +1,13 @@
 # Raccourcis pour lancer tous les services en local. `make help` liste les commandes.
-# Les tests d'un service se lancent dans le dépôt de ce service (`make test` dans ../auth).
+# Les tests d'un service se lancent dans le dépôt de ce service (`make test` dans ../bodyvision-user-service).
 # (Sous Windows : utilisez WSL, ou lancez directement les commandes `docker compose` indiquées.)
 
 COMPOSE := docker compose
 
-# Dépôts de services qui doivent être clonés À CÔTÉ de infra-compose (un dossier frère par service).
-# Ajouter ici chaque nouveau service construit par le compose.
-SERVICES := auth
+# Dossier du dépôt du service Auth, cloné À CÔTÉ de ce dépôt : valeur de AUTH_REPO_DIR dans .env, sinon le nom
+# réel du dépôt. Le compose lit la même variable (docker-compose.yml). Ajouter ici une variable par nouveau service.
+AUTH_REPO_DIR := $(or $(shell sed -n 's/^AUTH_REPO_DIR=//p' .env 2>/dev/null | tail -n 1 | tr -d '\r'),../bodyvision-user-service)
+export AUTH_REPO_DIR
 
 .DEFAULT_GOAL := help
 .PHONY: help env check db check-db up down logs ps config psql reset
@@ -17,10 +18,9 @@ help: ## Affiche cette aide
 env: ## Crée .env avec des secrets aléatoires (sans jamais écraser un .env existant)
 	@sh scripts/init-env.sh
 
-check: ## Vérifie que les dépôts des services sont bien clonés à côté de infra-compose
-	@for s in $(SERVICES); do \
-	  [ -f ../$$s/Dockerfile ] || { echo "ERREUR : le dépôt '$$s' doit être cloné à côté de infra-compose (attendu : ../$$s/Dockerfile)."; exit 1; }; \
-	done; echo "dépôts des services : OK ($(SERVICES))"
+check: ## Vérifie que les dépôts des services sont bien clonés à côté de ce dépôt
+	@[ -f $(AUTH_REPO_DIR)/Dockerfile ] || { echo "ERREUR : le dépôt 'bodyvision-user-service' doit être cloné à côté de ce dépôt (attendu : $(AUTH_REPO_DIR)/Dockerfile). Autre nom de dossier : AUTH_REPO_DIR dans .env."; exit 1; }
+	@echo "dépôts des services : OK ($(AUTH_REPO_DIR))"
 
 db: ## Démarre PostgreSQL SEUL (crée .env si besoin) et vérifie les rôles et schémas : rien d'autre à cloner
 	@[ -f .env ] || sh scripts/init-env.sh
@@ -53,6 +53,9 @@ config: ## Vérifie le docker-compose.yml et le .env (affiche la configuration r
 psql: ## Ouvre psql dans la base, en super-utilisateur
 	$(COMPOSE) exec postgres sh -c 'psql -U "$$POSTGRES_USER" -d "$$POSTGRES_DB"'
 
-reset: ## DESTRUCTIF : efface les données et rejoue l'initialisation (rôles, schémas, migrations)
+reset: ## DESTRUCTIF : efface les données, rejoue l'initialisation des rôles et schémas (les migrations : make up)
 	@printf "Cela supprime TOUTES les données locales (volumes). Continuer ? [y/N] " && read ans && [ "$$ans" = "y" ]
 	$(COMPOSE) down -v
+	$(COMPOSE) up -d --wait postgres
+	@$(MAKE) --no-print-directory check-db
+	@echo "Rôles et schémas recréés. 'make up' relance les services, dont les migrations Alembic."
