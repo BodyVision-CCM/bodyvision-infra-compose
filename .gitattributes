@@ -4,3 +4,9 @@
 Dockerfile   text eol=lf
 *.yml        text eol=lf
 *.yaml       text eol=lf
+# .env.example est LU ligne par ligne par scripts/init-env.sh : en CRLF, les lignes `X_PASSWORD=` ne seraient
+# pas reconnues et aucun secret ne serait généré. Mêmes raisons pour le SQL lu par psql.
+*.example    text eol=lf
+*.sql        text eol=lf
+*.md         text eol=lf
+Makefile     text eol=lf

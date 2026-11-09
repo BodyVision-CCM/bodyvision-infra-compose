@@ -30,7 +30,9 @@ secret() {
 }
 
 : > .env
+CR=$(printf '\r')
 while IFS= read -r line || [ -n "$line" ]; do
+    line=${line%"$CR"}   # tolère un .env.example en CRLF (checkout Windows sans .gitattributes)
     case "$line" in
         [A-Z_]*_PASSWORD=|INTERNAL_SERVICE_TOKEN=)
             printf '%s%s\n' "$line" "$(secret)" >> .env ;;
@@ -38,6 +40,13 @@ while IFS= read -r line || [ -n "$line" ]; do
             printf '%s\n' "$line" >> .env ;;
     esac
 done < .env.example
+
+# Garde-fou : on n'annonce « secrets générés » que si c'est vrai.
+if grep -Eq '^([A-Z_]*_PASSWORD|INTERNAL_SERVICE_TOKEN)=$' .env; then
+    rm -f .env
+    echo "ERREUR : un secret est resté vide : .env supprimé. Vérifiez que .env.example est bien en fins de ligne Unix (LF)." >&2
+    exit 1
+fi
 
 chmod 600 .env 2>/dev/null || true
 echo ".env créé avec des secrets aléatoires. Ne le commitez pas (déjà dans .gitignore)."

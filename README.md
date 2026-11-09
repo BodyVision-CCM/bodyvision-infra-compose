@@ -1,6 +1,6 @@
-# infra-compose – lancer tout BodyVision en local
+# bodyvision-infra-compose – lancer tout BodyVision en local
 
-Dépôt : <https://github.com/BodyVision-CCM/infra-compose>
+Dépôt : <https://github.com/BodyVision-CCM/bodyvision-infra-compose>
 
 Ce dépôt ne contient **aucun code de service** : seulement ce qui permet de faire tourner l'ensemble sur sa
 machine : le `docker-compose.yml`, l'instance PostgreSQL partagée (avec un schéma et un rôle SQL par service) et la
@@ -12,8 +12,8 @@ Un `git clone` suffit : rien d'autre à cloner pour avoir la base. Outils : Dock
 (sous Windows : WSL).
 
 ```bash
-git clone https://github.com/BodyVision-CCM/infra-compose.git
-cd infra-compose
+git clone https://github.com/BodyVision-CCM/bodyvision-infra-compose.git
+cd bodyvision-infra-compose
 make db      # crée .env (secrets aléatoires), démarre PostgreSQL seul, puis vérifie les rôles et schémas
 ```
 
@@ -25,16 +25,22 @@ Pour lancer aussi les services, il faut leurs dépôts à côté de celui-ci (se
 
 ## Prérequis pour lancer les services : les dépôts côte à côte
 
-Le compose construit chaque service depuis le dossier frère du même nom :
+Le compose construit chaque service depuis le dossier frère de son dépôt. Clonez les dépôts **dans le même dossier** :
+
+```bash
+git clone https://github.com/BodyVision-CCM/bodyvision-infra-compose.git
+git clone https://github.com/BodyVision-CCM/bodyvision-user-service.git     # service Auth (Utilisateurs)
+```
 
 ```
 projet/
-├── infra-compose/     <- ce dépôt : c'est ici qu'on lance les commandes
-├── auth/              <- dépôt « auth »
-└── (ingestion/, analytique/ ... à venir)
+├── bodyvision-infra-compose/   <- ce dépôt : c'est ici qu'on lance les commandes
+├── bodyvision-user-service/    <- service Auth
+└── (autres services, à venir)
 ```
 
-`make up` vérifie leur présence et dit lequel manque.
+`make up` vérifie leur présence et dit lequel manque. Si votre dossier porte un autre nom, indiquez-le avec
+`AUTH_REPO_DIR` dans `.env` (chemin relatif à ce dépôt ; défaut `../bodyvision-user-service`).
 
 ## Démarrer
 
@@ -50,9 +56,10 @@ make up      # construit et démarre PostgreSQL puis Auth, et attend qu'ils soie
 | PostgreSQL (DBeaver, psql) | `127.0.0.1:5432`, base `bodyvision` |
 
 Autres commandes : `make down` (arrêt, données conservées) · `make logs` · `make ps` · `make psql` ·
-`make config` · `make reset` (**efface les données locales** et rejoue l'initialisation) · `make help`.
+`make config` · `make reset` (**efface les données locales** et rejoue l'initialisation des rôles et schémas ; `make up` relance ensuite les
+services et leurs migrations) · `make help`.
 
-Les **tests** d'un service se lancent dans le dépôt de ce service : `cd ../auth && make test`.
+Les **tests** d'un service se lancent dans le dépôt de ce service : `cd ../bodyvision-user-service && make test`.
 
 ## Rôles et schémas attendus (source de vérité)
 
@@ -77,7 +84,8 @@ Le super-utilisateur (`POSTGRES_USER`) ne sert qu'à l'initialisation et à l'ad
 - son `search_path` est son schéma (les migrations et le code n'ont pas à préfixer les tables).
 
 Le script s'exécute **une seule fois**, au premier démarrage, quand le volume de données est vide. Pour le rejouer
-(nouveau service, mot de passe changé) : `make reset` (efface les données locales).
+(nouveau service, mot de passe changé) : `make reset` (efface les données locales, puis recrée les rôles et schémas et
+les vérifie).
 
 **Vérifier :** `make check-db` joue `postgres/verify.sql` et s'arrête au premier écart (rôle manquant, schéma d'un autre
 propriétaire, droit de création de schéma, accès au schéma `public`, accès croisé, `search_path`). Ce fichier fonctionne
@@ -89,7 +97,7 @@ psql -v ON_ERROR_STOP=1 -v auth_user=<rôle auth> -v ana_user=<rôle analytique>
 
 ### Équivalent dans le dépôt de chaque service
 
-Le dépôt `auth` teste contre une base **jetable** (`docker/test-db-init.sql`, mots de passe factices) pour rester autonome
+Le dépôt `bodyvision-user-service` teste contre une base **jetable** (`docker/test-db-init.sql`, mots de passe factices) pour rester autonome
 en CI. Ce fichier est l'équivalent, pour le seul schéma `utilisateurs`, du script ci-dessus : comparés sur deux bases
 vierges, ils donnent le même propriétaire, les mêmes droits (schéma, `public`, base), le même `search_path` et les mêmes
 attributs de rôle. **Si un droit change ici, le changer aussi dans `docker/test-db-init.sql`** (et inversement).
@@ -110,8 +118,9 @@ Point à valider sur Cloud SQL : l'administrateur y est un super-utilisateur res
 
 ## Ajouter un service
 
-1. Cloner son dépôt à côté de celui-ci (`../<nom>`) et l'ajouter à `SERVICES` dans le `Makefile` (pour la vérification).
-2. Copier le bloc `auth` du `docker-compose.yml` : `build: ../<nom>`, `depends_on: postgres: service_healthy`,
+1. Cloner son dépôt à côté de celui-ci et l'ajouter à la vérification `check` du `Makefile`.
+2. Copier le bloc `auth` du `docker-compose.yml` : `build: ${<SERVICE>_REPO_DIR:-../<dépôt du service>}` (et la variable
+   dans `.env.example` et le `Makefile`), `depends_on: postgres: service_healthy`,
    variables `DB_*` avec **le rôle du service**, port `127.0.0.1:80xx:8000` (auth 8001, ingestion 8002, analytique 8003).
 3. S'il a une base : ajouter son rôle et son schéma dans `postgres/init/00_roles_schemas.sh` **et** dans la liste
    `expected` de `postgres/verify.sql`, ses variables `<SERVICE>_DB_USER` / `<SERVICE>_DB_PASSWORD` dans `.env.example`
